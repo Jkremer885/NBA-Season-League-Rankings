@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>NBA Fantasy Rankings Dashboard</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+  <style>
+    body { background-color: #0b1120; color: #f8fafc; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    .card { background-color: #1e293b; border: 1px solid #334155; }
+    .table { color: #f8fafc; }
+    .table-dark { --bs-table-bg: #1e293b; --bs-table-border-color: #334155; }
+    .up { color: #4ade80; font-weight: bold; }
+    .down { color: #f87171; font-weight: bold; }
+    .even { color: #64748b; }
+    .nav-pills .nav-link { color: #94a3b8; }
+    .nav-pills .nav-link.active { background-color: #2563eb; color: #fff; }
+  </style>
+</head>
+<body class="p-4">
+<div class="container-fluid">
+  <div class="d-flex justify-content-between align-items-center mb-3">
+    <div>
+      <h2 class="mb-0">🏀 NBA Fantasy Rankings</h2>
+      <div id="meta-label" class="text-secondary small mt-1"></div>
+    </div>
+    <!-- Format Switcher -->
+    <ul class="nav nav-pills" id="system-selector">
+      <li class="nav-item">
+        <a class="nav-link active" href="#" onclick="switchSystem('category', this)">9-Cat H2H</a>
+      </li>
+      <li class="nav-item">
+        <a class="nav-link" href="#" onclick="switchSystem('points', this)">Points H2H</a>
+      </li>
+    </ul>
+  </div>
+
+  <!-- Time Window Switcher -->
+  <div class="btn-group mb-4" role="group">
+    <button class="btn btn-outline-primary active" onclick="switchWindow('season', this)">Season Overall</button>
+    <button class="btn btn-outline-primary" onclick="switchWindow('last_7_days', this)">Last 7 Days</button>
+    <button class="btn btn-outline-primary" onclick="switchWindow('last_10_days', this)">Last 10 Days</button>
+    <button class="btn btn-outline-primary" onclick="switchWindow('last_14_days', this)">Last 14 Days</button>
+  </div>
+
+  <div class="card p-3 shadow-sm">
+    <div class="table-responsive">
+      <table class="table table-dark table-hover align-middle mb-0" id="rank-table">
+        <thead>
+          <tr>
+            <th>Rank</th>
+            <th>Change</th>
+            <th>Player</th>
+            <th>Team</th>
+            <th>Pos</th>
+            <th id="metric-header">Score</th>
+            <th>PTS</th>
+            <th>REB</th>
+            <th>AST</th>
+            <th>ST</th>
+            <th>BLK</th>
+            <th>3PTM</th>
+            <th>TO</th>
+            <th>FG% (M/A)</th>
+            <th>FT% (M/A)</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<script>
+let rankingData = null;
+let currentSystem = 'category';
+let currentWindow = 'season';
+
+async function init() {
+  const res = await fetch('data/latest_rankings.json');
+  rankingData = await res.json();
+  document.getElementById('meta-label').innerText = 
+    `Season: ${rankingData.metadata.season} | Updated: ${rankingData.metadata.updated_at}`;
+  render();
+}
+
+function switchSystem(sys, elem) {
+  document.querySelectorAll('#system-selector .nav-link').forEach(el => el.classList.remove('active'));
+  elem.classList.add('active');
+  currentSystem = sys;
+  document.getElementById('metric-header').innerText = sys === 'category' ? 'Z-Value' : 'Fantasy Pts';
+  render();
+}
+
+function switchWindow(win, elem) {
+  document.querySelectorAll('.btn-group .btn').forEach(el => el.classList.remove('active'));
+  elem.classList.add('active');
+  currentWindow = win;
+  render();
+}
+
+function render() {
+  const players = rankingData.systems[currentSystem][currentWindow] || [];
+  const tbody = document.querySelector('#rank-table tbody');
+  tbody.innerHTML = '';
+
+  players.forEach(p => {
+    let change = '<span class="even">-</span>';
+    if (p.rank_change > 0) change = `<span class="up">▲ +${p.rank_change}</span>`;
+    if (p.rank_change < 0) change = `<span class="down">▼ ${p.rank_change}</span>`;
+
+    const fgPct = p.FGA > 0 ? ((p.FG / p.FGA) * 100).toFixed(1) + '%' : '-';
+    const ftPct = p.FTA > 0 ? ((p.FT / p.FTA) * 100).toFixed(1) + '%' : '-';
+
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td><strong>#${p.rank}</strong></td>
+      <td>${change}</td>
+      <td><strong>${p.Player}</strong></td>
+      <td>${p.Team}</td>
+      <td>${p.Pos}</td>
+      <td class="text-info font-monospace">${p.score.toFixed(1)}</td>
+      <td>${p.PTS}</td>
+      <td>${p.TRB}</td>
+      <td>${p.AST}</td>
+      <td>${p.STL}</td>
+      <td>${p.BLK}</td>
+      <td>${p.3P}</td>
+      <td>${p.TOV}</td>
+      <td>${fgPct} <small class="text-secondary">(${p.FG}/${p.FGA})</small></td>
+      <td>${ftPct} <small class="text-secondary">(${p.FT}/${p.FTA})</small></td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+init();
+</script>
+</body>
+</html>
