@@ -17,34 +17,39 @@ def scrape_bbr_totals(season_year):
     session = requests.Session()
     headers = {
         "User-Agent": (
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             "AppleWebKit/537.36 (KHTML, like Gecko) "
             "Chrome/128.0.0.0 Safari/537.36"
         ),
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9",
-        "Referer": "https://www.google.com/",
+        "Referer": "https://www.basketball-reference.com/",
+        "Sec-Ch-Ua": '"Chromium";v="128", "Not;A=Brand";v="24", "Google Chrome";v="128"',
+        "Sec-Ch-Ua-Mobile": "?0",
+        "Sec-Ch-Ua-Platform": '"Windows"',
     }
 
     html = None
-    for attempt in range(3):
+    for attempt in range(4):
         try:
-            resp = session.get(url, headers=headers, timeout=25)
+            print(f"Fetching {url} (Attempt {attempt + 1})...")
+            resp = session.get(url, headers=headers, timeout=30)
             if resp.status_code == 200:
                 html = resp.text
                 break
             elif resp.status_code == 429:
-                print(f"Rate limited (429). Retrying in {15 * (attempt + 1)}s...")
-                time.sleep(15 * (attempt + 1))
+                wait_time = 25 * (attempt + 1)
+                print(f"Rate limited (429). Sleeping {wait_time}s...")
+                time.sleep(wait_time)
             else:
-                print(f"Attempt {attempt + 1}: Received status code {resp.status_code}")
-                time.sleep(5)
+                print(f"Status {resp.status_code}. Sleeping 10s...")
+                time.sleep(10)
         except Exception as e:
-            print(f"Attempt {attempt + 1} request error: {e}")
-            time.sleep(5)
+            print(f"Connection attempt {attempt + 1} failed: {e}")
+            time.sleep(10)
 
     if not html:
-        raise RuntimeError(f"Unable to fetch valid HTML from {url}")
+        raise RuntimeError(f"Unable to load valid page response for season {season_year}")
 
     soup = BeautifulSoup(html, "html.parser")
     table = soup.find("table", {"id": "totals_stats"})
@@ -57,11 +62,9 @@ def scrape_bbr_totals(season_year):
     df_list = pd.read_html(str(table))
     df = df_list[0]
 
-    # Drop header rows embedded in table
+    # Clean headers & duplicate rows for traded players
     if "Rk" in df.columns:
         df = df[df["Rk"] != "Rk"].copy()
-
-    # Drop partial-season stint rows for traded players, keeping total row (first occurrence)
     if "Player" in df.columns:
         df = df.drop_duplicates(subset=["Player"], keep="first").copy()
 
@@ -141,12 +144,10 @@ def run_pipeline():
     today_str = datetime.date.today().isoformat()
     season = get_current_season_year()
 
-    # 1. Scrape with fallback to prior season if season page is empty/pre-season
     try:
-        print(f"Scraping season {season}...")
         df_current = scrape_bbr_totals(season)
     except Exception as e:
-        print(f"Failed scraping season {season}: {e}")
+        print(f"Failed loading season {season}: {e}")
         fallback_season = season - 1
         print(f"Falling back to prior season {fallback_season}...")
         df_current = scrape_bbr_totals(fallback_season)
@@ -161,8 +162,7 @@ def run_pipeline():
         "FTA", "TRB", "AST", "STL", "BLK", "TOV", "PTS"
     ]
     snapshot_data = df_current[snapshot_cols].to_dict(orient="records")
-    snapshot_path = f"data/snapshots/{today_str}.json"
-    with open(snapshot_path, "w") as f:
+    with open(f"data/snapshots/{today_str}.json", "w") as f:
         json.dump(snapshot_data, f)
 
     yesterday_str = (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
@@ -235,7 +235,7 @@ def run_pipeline():
     with open(f"data/rankings_{today_str}.json", "w") as f:
         json.dump(output_bundle, f)
 
-    print("Pipeline completed: wrote data/latest_rankings.json successfully.")
+    print("Pipeline run complete.")
 
 
 if __name__ == "__main__":
