@@ -2,46 +2,49 @@ import datetime
 import json
 import os
 import time
-import urllib.request
+import requests
 from bs4 import BeautifulSoup
 import pandas as pd
 
 
 def get_current_season_year():
     now = datetime.datetime.now(datetime.timezone.utc)
-    # The NBA regular season begins in October; URL reflects the playoff/ending calendar year
     return now.year + 1 if now.month >= 10 else now.year
 
 
 def scrape_bbr_totals(season_year):
     url = f"https://www.basketball-reference.com/leagues/NBA_{season_year}_totals.html"
+    session = requests.Session()
     headers = {
         "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/128.0.0.0 Safari/537.36"
         ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9",
-        "Referer": "https://www.basketball-reference.com/",
+        "Referer": "https://www.google.com/",
     }
 
-    req = urllib.request.Request(url, headers=headers)
     html = None
-
     for attempt in range(3):
         try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                html = resp.read().decode("utf-8", errors="ignore")
-            break
-        except urllib.error.HTTPError as e:
-            if e.code == 429 and attempt < 2:
+            resp = session.get(url, headers=headers, timeout=25)
+            if resp.status_code == 200:
+                html = resp.text
+                break
+            elif resp.status_code == 429:
+                print(f"Rate limited (429). Retrying in {15 * (attempt + 1)}s...")
                 time.sleep(15 * (attempt + 1))
             else:
-                raise e
-        except Exception as e:
-            if attempt < 2:
+                print(f"Attempt {attempt + 1}: Received status code {resp.status_code}")
                 time.sleep(5)
-            else:
-                raise e
+        except Exception as e:
+            print(f"Attempt {attempt + 1} request error: {e}")
+            time.sleep(5)
+
+    if not html:
+        raise RuntimeError(f"Unable to fetch valid HTML from {url}")
 
     soup = BeautifulSoup(html, "html.parser")
     table = soup.find("table", {"id": "totals_stats"})
@@ -49,34 +52,22 @@ def scrape_bbr_totals(season_year):
         table = soup.find("table")
 
     if not table:
-        raise ValueError(
-            f"Totals table not found at {url}. Page may still be empty or structured differently."
-        )
+        raise ValueError(f"Could not locate stats table in response for season {season_year}")
 
-    dfs = pd.read_html(str(table))
-    df = dfs[0]
+    df_list = pd.read_html(str(table))
+    df = df_list[0]
 
+    # Drop header rows embedded in table
     if "Rk" in df.columns:
         df = df[df["Rk"] != "Rk"].copy()
 
+    # Drop partial-season stint rows for traded players, keeping total row (first occurrence)
     if "Player" in df.columns:
         df = df.drop_duplicates(subset=["Player"], keep="first").copy()
 
     stat_cols = [
-        "G",
-        "GS",
-        "MP",
-        "FG",
-        "FGA",
-        "3P",
-        "FT",
-        "FTA",
-        "TRB",
-        "AST",
-        "STL",
-        "BLK",
-        "TOV",
-        "PTS",
+        "G", "GS", "MP", "FG", "FGA", "3P", "FT", "FTA",
+        "TRB", "AST", "STL", "BLK", "TOV", "PTS"
     ]
     for col in stat_cols:
         if col in df.columns:
@@ -150,44 +141,31 @@ def run_pipeline():
     today_str = datetime.date.today().isoformat()
     season = get_current_season_year()
 
+    # 1. Scrape with fallback to prior season if season page is empty/pre-season
     try:
+        print(f"Scraping season {season}...")
         df_current = scrape_bbr_totals(season)
     except Exception as e:
-        print(f"Scraping current season {season} failed: {e}")
-        prev_season = season - 1
-        print(f"Falling back to season {prev_season} totals...")
-        df_current = scrape_bbr_totals(prev_season)
-        season = prev_season
+        print(f"Failed scraping season {season}: {e}")
+        fallback_season = season - 1
+        print(f"Falling back to prior season {fallback_season}...")
+        df_current = scrape_bbr_totals(fallback_season)
+        season = fallback_season
 
     for col in ["Player", "Team", "Pos"]:
         if col not in df_current.columns:
             df_current[col] = "Unknown"
 
     snapshot_cols = [
-        "Player",
-        "Team",
-        "Pos",
-        "G",
-        "FG",
-        "FGA",
-        "3P",
-        "FT",
-        "FTA",
-        "TRB",
-        "AST",
-        "STL",
-        "BLK",
-        "TOV",
-        "PTS",
+        "Player", "Team", "Pos", "G", "FG", "FGA", "3P", "FT",
+        "FTA", "TRB", "AST", "STL", "BLK", "TOV", "PTS"
     ]
     snapshot_data = df_current[snapshot_cols].to_dict(orient="records")
     snapshot_path = f"data/snapshots/{today_str}.json"
     with open(snapshot_path, "w") as f:
         json.dump(snapshot_data, f)
 
-    yesterday_str = (
-        datetime.date.today() - datetime.timedelta(days=1)
-    ).isoformat()
+    yesterday_str = (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
     prev_run_file = f"data/rankings_{yesterday_str}.json"
     prev_ranks = {}
     if os.path.exists(prev_run_file):
@@ -204,17 +182,7 @@ def run_pipeline():
     }
 
     numeric_cols = [
-        "FG",
-        "FGA",
-        "3P",
-        "FT",
-        "FTA",
-        "TRB",
-        "AST",
-        "STL",
-        "BLK",
-        "TOV",
-        "PTS",
+        "FG", "FGA", "3P", "FT", "FTA", "TRB", "AST", "STL", "BLK", "TOV", "PTS"
     ]
     windows = [0, 7, 10, 14]
 
@@ -224,31 +192,22 @@ def run_pipeline():
         if days == 0:
             df_window = df_current.copy()
         else:
-            target_date = (
-                datetime.date.today() - datetime.timedelta(days=days)
-            ).isoformat()
+            target_date = (datetime.date.today() - datetime.timedelta(days=days)).isoformat()
             target_file = f"data/snapshots/{target_date}.json"
             if os.path.exists(target_file):
                 with open(target_file, "r") as f:
                     old_data = pd.DataFrame(json.load(f))
-                merged = df_current.merge(
-                    old_data, on="Player", suffixes=("", "_old")
-                )
+                merged = df_current.merge(old_data, on="Player", suffixes=("", "_old"))
                 df_window = df_current[["Player", "Team", "Pos"]].copy()
                 for c in numeric_cols:
-                    df_window[c] = (
-                        merged[c] - merged.get(f"{c}_old", 0)
-                    ).clip(lower=0)
+                    df_window[c] = (merged[c] - merged.get(f"{c}_old", 0)).clip(lower=0)
             else:
                 df_window = df_current.copy()
 
         ranked_cat = calculate_category_rankings(df_window)
         ranked_pts = calculate_points_rankings(df_window)
 
-        for sys_key, ranked_df in [
-            ("category", ranked_cat),
-            ("points", ranked_pts),
-        ]:
+        for sys_key, ranked_df in [("category", ranked_cat), ("points", ranked_pts)]:
             prev_window_ranks = {
                 p["Player"]: p["rank"]
                 for p in prev_ranks.get(sys_key, {}).get(window_label, [])
@@ -259,37 +218,16 @@ def run_pipeline():
                 ranked_df["rank_change"] = ranked_df["Player"].apply(
                     lambda p: prev_window_ranks.get(
                         p,
-                        ranked_df.loc[
-                            ranked_df["Player"] == p, "rank"
-                        ].values[0],
-                    )
-                    - ranked_df.loc[
-                        ranked_df["Player"] == p, "rank"
-                    ].values[0]
+                        ranked_df.loc[ranked_df["Player"] == p, "rank"].values[0]
+                    ) - ranked_df.loc[ranked_df["Player"] == p, "rank"].values[0]
                 )
 
             export_cols = [
-                "rank",
-                "rank_change",
-                "Player",
-                "Team",
-                "Pos",
-                "score",
-                "PTS",
-                "TRB",
-                "AST",
-                "STL",
-                "BLK",
-                "3P",
-                "TOV",
-                "FG",
-                "FGA",
-                "FT",
-                "FTA",
+                "rank", "rank_change", "Player", "Team", "Pos", "score",
+                "PTS", "TRB", "AST", "STL", "BLK", "3P", "TOV",
+                "FG", "FGA", "FT", "FTA"
             ]
-            output_bundle["systems"][sys_key][window_label] = ranked_df[
-                export_cols
-            ].to_dict(orient="records")
+            output_bundle["systems"][sys_key][window_label] = ranked_df[export_cols].to_dict(orient="records")
 
     with open("data/latest_rankings.json", "w") as f:
         json.dump(output_bundle, f, indent=2)
@@ -297,7 +235,7 @@ def run_pipeline():
     with open(f"data/rankings_{today_str}.json", "w") as f:
         json.dump(output_bundle, f)
 
-    print("Rankings successfully generated and saved to data/latest_rankings.json")
+    print("Pipeline completed: wrote data/latest_rankings.json successfully.")
 
 
 if __name__ == "__main__":
